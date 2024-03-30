@@ -5,235 +5,257 @@
 package main
 
 import (
+	"crypto/dsa"
+	"crypto/ecdsa"
+	"crypto/md5"
+	"crypto/rsa"
 	"fmt"
-	"math/rand"
-	"sort"
-	"strings"
-	"time"
-)
+	"log"
 
-import (
+	"github.com/kayrus/putty"
 	"github.com/lxn/walk"
+
 	. "github.com/lxn/walk/declarative"
 )
 
-type Foo struct {
-	Index   int
-	Bar     string
-	Baz     float64
-	Quux    time.Time
-	checked bool
+type PuttyKey struct {
+	key            *putty.Key
+	bitlen         int
+	pubfingerprint string
+	checked        bool
 }
 
-type FooModel struct {
+func NewPuttyKey(keyfile string) (*PuttyKey, error) {
+	puttyKey, err := putty.NewFromFile(keyfile)
+	if err != nil {
+		return nil, err
+	}
+
+	if puttyKey.Encryption != "none" {
+		return nil, fmt.Errorf("Keys with passwords are unsuported")
+	}
+
+	_, err = puttyKey.ParseRawPrivateKey(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	pubkey, _ := puttyKey.ParseRawPublicKey()
+	var lpubkeylen int = -1
+	switch key := pubkey.(type) {
+	case *rsa.PublicKey:
+		lpubkeylen = key.N.BitLen()
+
+	case *ecdsa.PublicKey:
+		lpubkeylen = key.Params().BitSize
+
+	case *dsa.PublicKey:
+		lpubkeylen = key.P.BitLen()
+	}
+
+	fp := md5.Sum(puttyKey.PublicKey)
+	lsfp := ""
+
+	for i, b := range fp {
+		lsfp += fmt.Sprintf("%02x", b)
+		if i < len(fp)-1 {
+			lsfp += ":"
+		}
+	}
+
+	return &PuttyKey{puttyKey, lpubkeylen, lsfp, false}, nil
+}
+
+type PuttyKeysModel struct {
 	walk.TableModelBase
-	walk.SorterBase
-	sortColumn int
-	sortOrder  walk.SortOrder
-	items      []*Foo
+	items []*PuttyKey
 }
 
-func NewFooModel() *FooModel {
-	m := new(FooModel)
-	m.ResetRows()
-	return m
+func NewPuttyKeysModel(_keyfiles []string) *PuttyKeysModel {
+	keysmodel := &PuttyKeysModel{items: []*PuttyKey{}}
+
+	for _, lkey := range _keyfiles {
+		litem, err := NewPuttyKey(lkey)
+		if err != nil {
+			continue
+		}
+
+		keysmodel.items = append(keysmodel.items, litem)
+	}
+
+	return keysmodel
 }
 
-// Called by the TableView from SetModel and every time the model publishes a
-// RowsReset event.
-func (m *FooModel) RowCount() int {
+func (m *PuttyKeysModel) RowCount() int {
 	return len(m.items)
 }
 
-// Called by the TableView when it needs the text to display for a given cell.
-func (m *FooModel) Value(row, col int) interface{} {
+func (m *PuttyKeysModel) Value(row, col int) interface{} {
 	item := m.items[row]
 
 	switch col {
 	case 0:
-		return item.Index
+		return item.key.Algo
 
 	case 1:
-		return item.Bar
+		return item.bitlen
 
 	case 2:
-		return item.Baz
+		return item.pubfingerprint
 
 	case 3:
-		return item.Quux
+		return item.key.Comment
 	}
 
 	panic("unexpected col")
 }
 
-// Called by the TableView to retrieve if a given row is checked.
-func (m *FooModel) Checked(row int) bool {
+func (m *PuttyKeysModel) Checked(row int) bool {
 	return m.items[row].checked
 }
 
 // Called by the TableView when the user toggled the check box of a given row.
-func (m *FooModel) SetChecked(row int, checked bool) error {
+func (m *PuttyKeysModel) SetChecked(row int, checked bool) error {
 	m.items[row].checked = checked
 
 	return nil
 }
 
-// Called by the TableView to sort the model.
-func (m *FooModel) Sort(col int, order walk.SortOrder) error {
-	m.sortColumn, m.sortOrder = col, order
-
-	sort.SliceStable(m.items, func(i, j int) bool {
-		a, b := m.items[i], m.items[j]
-
-		c := func(ls bool) bool {
-			if m.sortOrder == walk.SortAscending {
-				return ls
-			}
-
-			return !ls
-		}
-
-		switch m.sortColumn {
-		case 0:
-			return c(a.Index < b.Index)
-
-		case 1:
-			return c(a.Bar < b.Bar)
-
-		case 2:
-			return c(a.Baz < b.Baz)
-
-		case 3:
-			return c(a.Quux.Before(b.Quux))
-		}
-
-		panic("unreachable")
-	})
-
-	return m.SorterBase.Sort(col, order)
-}
-
-func (m *FooModel) ResetRows() {
-	// Create some random data.
-	m.items = make([]*Foo, rand.Intn(50000))
-
-	now := time.Now()
-
-	for i := range m.items {
-		m.items[i] = &Foo{
-			Index: i,
-			Bar:   strings.Repeat("*", rand.Intn(5)+1),
-			Baz:   rand.Float64() * 1000,
-			Quux:  time.Unix(rand.Int63n(now.Unix()), 0),
-		}
+func (m *PuttyKeysModel) AddItem(keyfile string) {
+	item, err := NewPuttyKey(keyfile)
+	if err != nil {
+		return
 	}
 
-	// Notify TableView and other interested parties about the reset.
-	m.PublishRowsReset()
+	m.items = append(m.items, item)
+	m.PublishRowsInserted(len(m.items), len(m.items))
+}
 
-	m.Sort(m.sortColumn, m.sortOrder)
+func (m *PuttyKeysModel) RemoveItem(itemIndex int) {
+	if itemIndex < 0 {
+		return
+	}
+
+	m.items = append(m.items[:itemIndex], m.items[itemIndex+1:]...)
+	m.PublishRowsRemoved(itemIndex, itemIndex)
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
+	keysmodel := NewPuttyKeysModel([]string{"./ruslan.ppk", "./ruslan-20032019.ppk"})
 
-	boldFont, _ := walk.NewFont("Segoe UI", 9, walk.FontBold)
-	goodIcon, _ := walk.Resources.Icon("../img/check.ico")
-	badIcon, _ := walk.Resources.Icon("../img/stop.ico")
+	ico, _ := walk.NewIconFromResourceId(2)
+	mw, _ := walk.NewMainWindow()
 
-	barBitmap, err := walk.NewBitmap(walk.Size{100, 1})
+	// Create the notify icon and make sure we clean it up on exit.
+	ni, err := walk.NewNotifyIcon(mw)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	defer barBitmap.Dispose()
+	defer ni.Dispose()
 
-	canvas, err := walk.NewCanvasFromImage(barBitmap)
-	if err != nil {
-		panic(err)
+	// Set the icon and a tool tip text.
+	if err := ni.SetIcon(ico); err != nil {
+		log.Fatal(err)
 	}
-	defer barBitmap.Dispose()
+	if err := ni.SetToolTip("Click for info or use the context menu to exit."); err != nil {
+		log.Fatal(err)
+	}
 
-	canvas.GradientFillRectangle(walk.RGB(255, 0, 0), walk.RGB(0, 255, 0), walk.Horizontal, walk.Rectangle{0, 0, 100, 1})
-
-	canvas.Dispose()
-
-	model := NewFooModel()
-
+	var lldldg *walk.Dialog
 	var tv *walk.TableView
 
-	MainWindow{
-		Title:  "Walk TableView Example",
-		Size:   Size{800, 600},
-		Layout: VBox{MarginsZero: true},
-		Children: []Widget{
-			PushButton{
-				Text:      "Reset Rows",
-				OnClicked: model.ResetRows,
-			},
-			PushButton{
-				Text: "Select first 5 even Rows",
-				OnClicked: func() {
-					tv.SetSelectedIndexes([]int{0, 2, 4, 6, 8})
+	viewKeysAction := walk.NewAction()
+	ni.ContextMenu().Actions().Add(viewKeysAction)
+	viewKeysAction.SetText("View Keys")
+	viewKeysAction.Triggered().Attach(func() {
+		if lldldg != nil {
+			lldldg.SetFocus()
+		}
+
+		Dialog{
+			Title:      "PAgent Key List",
+			MinSize:    Size{600, 400},
+			AssignTo:   &lldldg,
+			Persistent: true,
+			Icon:       ico,
+			Layout:     VBox{},
+			Children: []Widget{
+				TableView{
+					AssignTo:         &tv,
+					HeaderHidden:     true,
+					AlternatingRowBG: false,
+					CheckBoxes:       false,
+					ColumnsOrderable: false,
+					MultiSelection:   false,
+					Columns: []TableViewColumn{
+						{Title: "Key Type"},
+						{Title: "PubKey Length", Width: 50},
+						{Title: "PubKey FingerPrint"},
+						{Title: "Key Description", Width: 150},
+					},
+					Model: keysmodel,
+					OnBoundsChanged: func() {
+						b := tv.Bounds()
+						c := tv.Columns()
+
+						lwidth := b.Width - c.At(0).Width() - c.At(1).Width() - c.At(3).Width()
+						c.At(2).SetWidth(lwidth)
+					},
+					OnSelectedIndexesChanged: func() {
+						fmt.Printf("SelectedIndexes: %v\n", tv.SelectedIndexes())
+					},
+				},
+				Composite{
+					Layout: Grid{Columns: 2, Alignment: AlignHCenterVCenter},
+					Children: []Widget{
+						PushButton{
+							Text: "Add Key",
+							OnClicked: func() {
+								dlg := new(walk.FileDialog)
+
+								dlg.FilePath = "d:\\src\\walk\\examples\\tableview"
+								dlg.Filter = "Putty ppk Files (*.ppk"
+								dlg.Title = "Select an key file"
+
+								if ok, err := dlg.ShowOpen(lldldg); err != nil {
+									return
+								} else if !ok {
+									return
+								}
+
+								keysmodel.AddItem(dlg.FilePath)
+							},
+						},
+						PushButton{
+							Text: "Remove Key",
+							OnClicked: func() {
+								keysmodel.RemoveItem(tv.CurrentIndex())
+							},
+						},
+					},
 				},
 			},
-			TableView{
-				AssignTo:         &tv,
-				AlternatingRowBG: true,
-				CheckBoxes:       true,
-				ColumnsOrderable: true,
-				MultiSelection:   true,
-				Columns: []TableViewColumn{
-					{Title: "#"},
-					{Title: "Bar"},
-					{Title: "Baz", Alignment: AlignFar},
-					{Title: "Quux", Format: "2006-01-02 15:04:05", Width: 150},
-				},
-				StyleCell: func(style *walk.CellStyle) {
-					item := model.items[style.Row()]
+		}.Create(nil)
 
-					if item.checked {
-						if style.Row()%2 == 0 {
-							style.BackgroundColor = walk.RGB(159, 215, 255)
-						} else {
-							style.BackgroundColor = walk.RGB(143, 199, 239)
-						}
-					}
+		lldldg.Show()
+		lldldg.Closing().Attach(func(canceled *bool, reason walk.CloseReason) {
+			lldldg = nil
+		})
+	})
 
-					switch style.Col() {
-					case 1:
-						if canvas := style.Canvas(); canvas != nil {
-							bounds := style.Bounds()
-							bounds.X += 2
-							bounds.Y += 2
-							bounds.Width = int((float64(bounds.Width) - 4) / 5 * float64(len(item.Bar)))
-							bounds.Height -= 4
-							canvas.DrawBitmapPartWithOpacity(barBitmap, bounds, walk.Rectangle{0, 0, 100 / 5 * len(item.Bar), 1}, 127)
+	// We put an exit action into the context menu.
+	exitAction := walk.NewAction()
+	ni.ContextMenu().Actions().Add(exitAction)
+	exitAction.SetText("E&xit")
+	exitAction.Triggered().Attach(func() {
+		walk.App().Exit(0)
+	})
 
-							bounds.X += 4
-							bounds.Y += 2
-							canvas.DrawText(item.Bar, tv.Font(), 0, bounds, walk.TextLeft)
-						}
+	// The notify icon is hidden initially, so we have to make it visible.
+	if err := ni.SetVisible(true); err != nil {
+		log.Fatal(err)
+	}
 
-					case 2:
-						if item.Baz >= 900.0 {
-							style.TextColor = walk.RGB(0, 191, 0)
-							style.Image = goodIcon
-						} else if item.Baz < 100.0 {
-							style.TextColor = walk.RGB(255, 0, 0)
-							style.Image = badIcon
-						}
-
-					case 3:
-						if item.Quux.After(time.Now().Add(-365 * 24 * time.Hour)) {
-							style.Font = boldFont
-						}
-					}
-				},
-				Model: model,
-				OnSelectedIndexesChanged: func() {
-					fmt.Printf("SelectedIndexes: %v\n", tv.SelectedIndexes())
-				},
-			},
-		},
-	}.Run()
+	// Run the message loop.
+	mw.Run()
 }

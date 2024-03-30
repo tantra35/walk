@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+//go:build windows
 // +build windows
 
 package walk
@@ -34,6 +35,9 @@ func notifyIconWndProc(hwnd win.HWND, msg uint32, wParam, lParam uintptr) (resul
 		ni.publishMouseEvent(&ni.mouseUpPublisher, RightButton)
 
 		win.SendMessage(hwnd, msg, wParam, win.WM_CONTEXTMENU)
+
+	case win.WM_LBUTTONDBLCLK:
+		ni.publishMouseEvent(&ni.mouseDobleClickPublisher, LeftButton)
 
 	case win.WM_CONTEXTMENU:
 		if ni.contextMenu.Actions().Len() == 0 {
@@ -72,16 +76,17 @@ func notifyIconWndProc(hwnd win.HWND, msg uint32, wParam, lParam uintptr) (resul
 
 // NotifyIcon represents an icon in the taskbar notification area.
 type NotifyIcon struct {
-	id                      uint32
-	hWnd                    win.HWND
-	lastDPI                 int
-	contextMenu             *Menu
-	icon                    Image
-	toolTip                 string
-	visible                 bool
-	mouseDownPublisher      MouseEventPublisher
-	mouseUpPublisher        MouseEventPublisher
-	messageClickedPublisher EventPublisher
+	id                       uint32
+	hWnd                     win.HWND
+	lastDPI                  int
+	contextMenu              *Menu
+	icon                     Image
+	toolTip                  string
+	visible                  bool
+	mouseDobleClickPublisher MouseEventPublisher
+	mouseDownPublisher       MouseEventPublisher
+	mouseUpPublisher         MouseEventPublisher
+	messageClickedPublisher  EventPublisher
 }
 
 // NewNotifyIcon creates and returns a new NotifyIcon.
@@ -415,4 +420,8 @@ func (ni *NotifyIcon) MouseUp() *MouseEvent {
 // one of its iconed variants.
 func (ni *NotifyIcon) MessageClicked() *Event {
 	return ni.messageClickedPublisher.Event()
+}
+
+func (ni *NotifyIcon) DoubleClicked() *MouseEvent {
+	return ni.mouseDobleClickPublisher.Event()
 }
